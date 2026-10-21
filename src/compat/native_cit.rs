@@ -311,7 +311,7 @@ pub(super) fn migrate(
                 if scoped {
                     report.warnings.push(format!("原版条件模型 {item}：背包数字通过 Forge separate_transforms 单独显示；手持、掉落和展示保留对应基础模型。非 Forge 客户端使用基础外观"));
                 }
-                match emit(root, target, &item, &cases, &mut state, report) {
+                match emit(root, target, &item, &cases, &mut state, report, false) {
                     Ok(count) => total += count,
                     Err(error) => report.warnings.push(format!(
                         "原版条件模型 {item}：{error:#}；完整原始定义已保留"
@@ -350,6 +350,7 @@ fn emit(
     cases: &[tree::Case],
     state: &mut State,
     report: &mut AssetReport,
+    live_base: bool,
 ) -> Result<usize> {
     let cases = cases
         .iter()
@@ -403,7 +404,7 @@ fn emit(
                 .or_else(|| variants.last())
                 .unwrap()
                 .1;
-            let mut model = contexts::model(root, target, item, base, &mut pending)?;
+            let mut model = contexts::model(root, target, item, base, &mut pending, live_base)?;
             let mut overrides = vec![];
             let mut dynamic = variants
                 .iter()
@@ -413,7 +414,7 @@ fn emit(
                 x.runtime.len().cmp(&y.runtime.len()).then_with(|| b.cmp(a))
             });
             for (_, case) in dynamic {
-                let value = contexts::model(root, target, item, case, &mut pending)?;
+                let value = contexts::model(root, target, item, case, &mut pending, live_base)?;
                 let reference = model_output(&value, &mut pending)?;
                 overrides.push(json!({"predicate":case.runtime,"model":reference}));
             }
@@ -537,7 +538,7 @@ pub(crate) fn install_builtin_hud(
         for (item, definition) in definitions {
             match contexts::compile(&definition["model"]) {
                 Ok((cases, _)) => {
-                    emit(&stage, target, item, &cases, &mut state, report)?;
+                    emit(&stage, target, item, &cases, &mut state, report, true)?;
                 }
                 Err(error) => report
                     .warnings
@@ -565,6 +566,10 @@ pub(crate) fn install_builtin_hud(
         }
         write(root, &destination, &bytes)?;
     }
+    report.converted.push(
+        "内置背包数字：基础物品模型、纹理与手持姿态跟随当前生效的材质包，数字层只作用于背包显示"
+            .into(),
+    );
     report.warnings.push("内置背包等级数字在此版本需要兼容 CIT 和 Forge separate_transforms 的客户端；不支持该接口时使用正常基础外观，数字不会贴到手持物品上".into());
     Ok(())
 }

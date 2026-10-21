@@ -5,6 +5,42 @@ const TRACE: &str = "FAST_PACK_GUARD_TEST_TRACE";
 const NATIVE_FAILURE: i32 = 0xC0000005_u32 as i32;
 
 #[test]
+fn current_process_identity_can_be_checked_before_creating_a_runtime_lease() {
+    assert!(
+        process_creation(std::process::id())
+            .flatten()
+            .is_some_and(|creation| creation > 0)
+    );
+}
+
+#[test]
+fn normal_runtime_close_does_not_trigger_recovery() {
+    let work = tempfile::tempdir().unwrap();
+    let lease = RuntimeLease::create(work.path(), 10, 123).unwrap();
+    lease.finish();
+    assert!(!recover_unclean(work.path(), |_, _| false));
+}
+
+#[test]
+fn runtime_failure_is_recorded_once_and_live_instances_are_preserved() {
+    let work = tempfile::tempdir().unwrap();
+    let alive = RuntimeLease::create(work.path(), 10, 123).unwrap();
+    let failed = RuntimeLease::create(work.path(), 20, 456).unwrap();
+    let failed_path = failed.0.clone();
+    let _unacknowledged = failed; // No clean-close acknowledgement was made.
+    assert!(recover_unclean(work.path(), |pid, stamp| pid == 10 && stamp == 123));
+    assert!(!failed_path.exists());
+    assert!(alive.0.exists());
+    assert!(
+        work.path()
+            .join("logs/renderer-unclean-20-456.json")
+            .is_file()
+    );
+    assert!(!recover_unclean(work.path(), |pid, stamp| pid == 10 && stamp == 123));
+    alive.finish();
+}
+
+#[test]
 fn child_fixture() {
     let Ok(role) = std::env::var(ROLE) else {
         return;

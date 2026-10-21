@@ -182,8 +182,14 @@ pub(super) fn model(
     item: &str,
     case: &Case,
     outputs: &mut BTreeMap<String, Vec<u8>>,
+    live_base: bool,
 ) -> Result<Value> {
-    let mut base = models::compose(root, target, item, &case.parts, outputs)?;
+    let compose = if live_base {
+        models::compose_overlay
+    } else {
+        models::compose
+    };
+    let mut base = compose(root, target, item, &case.parts, outputs)?;
     atlas_safe(root, target, &mut base, outputs)?;
     if case.perspectives.is_empty() {
         return Ok(base);
@@ -191,7 +197,7 @@ pub(super) fn model(
     let mut perspectives = serde_json::Map::new();
     for (name, parts) in &case.perspectives {
         if *parts != case.parts {
-            let mut child = models::compose(root, target, item, parts, outputs)?;
+            let mut child = compose(root, target, item, parts, outputs)?;
             atlas_safe(root, target, &mut child, outputs)?;
             perspectives.insert(name.clone(), child);
         }
@@ -203,6 +209,9 @@ pub(super) fn model(
     result["loader"] = json!("forge:separate_transforms");
     result["base"] = base;
     result["perspectives"] = Value::Object(perspectives);
+    if live_base && result["textures"].get("particle").is_none() {
+        result["textures"]["particle"] = json!("#layer0");
+    }
     if result["textures"].get("particle").is_none() {
         if let Some(particle) = result["textures"]["layer0"].as_str().map(str::to_owned) {
             result["textures"]["particle"] = json!(particle);
@@ -220,7 +229,7 @@ fn atlas_safe(
     if target < 12 {
         return Ok(());
     }
-    if let Some(textures) = model["textures"].as_object_mut() {
+    if let Some(textures) = model.get_mut("textures").and_then(Value::as_object_mut) {
         for value in textures.values_mut() {
             let Some(reference) = value.as_str().map(str::to_owned) else {
                 continue;

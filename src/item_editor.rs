@@ -153,10 +153,12 @@ impl Editor {
         let revision = self.revision;
         Task::perform(
             async move {
-                let result = custom_items::preview(
-                    source.as_deref().unwrap_or(std::path::Path::new("")),
-                    &item,
-                )
+                let result = fast_pack::tasks::run("生成物品预览", || {
+                    custom_items::preview(
+                        source.as_deref().unwrap_or(std::path::Path::new("")),
+                        &item,
+                    )
+                })
                 .map(|image| {
                     let side = image.width().min(image.height());
                     let image =

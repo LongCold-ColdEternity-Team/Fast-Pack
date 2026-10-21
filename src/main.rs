@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod diagnostics;
+#[cfg(windows)]
 mod gui;
 #[cfg(windows)]
 mod motion;
@@ -16,6 +18,8 @@ mod ui_profile;
 mod windows_compat;
 
 fn main() {
+    #[cfg(windows)]
+    diagnostics::install();
     #[cfg(windows)]
     startup::begin();
     let helper =
@@ -60,6 +64,7 @@ fn main() {
     #[cfg(windows)]
     {
         renderer_guard::entered();
+        let runtime = renderer_guard::runtime_lease();
         if let Err(error) = gui::run() {
             if renderer_guard::pending() {
                 eprintln!("{error:#}");
@@ -67,6 +72,9 @@ fn main() {
                 gui::show_error(&format!("{error:#}"));
             }
             std::process::exit(1);
+        }
+        if let Some(runtime) = runtime {
+            runtime.finish();
         }
     }
     #[cfg(not(windows))]

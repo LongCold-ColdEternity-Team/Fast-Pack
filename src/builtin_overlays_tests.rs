@@ -496,3 +496,87 @@ fn legacy_gui_numbers_do_not_replace_native_cit_cache_or_leak_into_handheld_base
     }
     assert!(scoped);
 }
+
+#[test]
+fn durability_overlay_keeps_live_hand_pose_and_texture_from_other_packs() {
+    for pose_below in [true, false] {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        let item = "assets/minecraft/models/item/golden_sword.json";
+        let authored = json!({"parent":"minecraft:item/handheld",
+        "textures":{"layer0":"author:item/golden_sword"},
+        "display":{
+            "firstperson_righthand":{"rotation":[15,35,55],"scale":[0.3,0.4,0.5]},
+            "firstperson_lefthand":{"rotation":[-15,-35,-55],"translation":[2,4,6]}
+        }});
+        let authored_bytes = serde_json::to_vec(&authored).unwrap();
+        let texture = root.join("assets/author/textures/item/golden_sword.png");
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([201, 97, 42, 255]))
+            .save(&texture)
+            .unwrap();
+        if pose_below {
+            write(root, item, &authored_bytes).unwrap();
+        }
+        let mut report = AssetReport::default();
+        apply(
+            root,
+            "1.20.1",
+            &settings(&[Feature::GoldenDurability]),
+            &mut report,
+        )
+        .unwrap();
+        if !pose_below {
+            write(root, item, &authored_bytes).unwrap();
+        }
+        assert_eq!(std::fs::read(root.join(item)).unwrap(), authored_bytes);
+        assert!(
+            !root
+                .join("assets/minecraft/models/item/handheld.json")
+                .exists()
+        );
+        let mut count = 0;
+        for entry in crate::packfs::WalkDir::new(
+            root.join("assets/minecraft/models/item/fastpack_builtin_hud_cit"),
+        ) {
+            let entry = entry.unwrap();
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let model: Value =
+                serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap();
+            if model["loader"] != "forge:separate_transforms" {
+                continue;
+            }
+            count += 1;
+            assert_eq!(
+                model["base"],
+                json!({"parent":"minecraft:item/golden_sword"})
+            );
+            assert!(model.get("display").is_none());
+            let gui = &model["perspectives"]["gui"];
+            assert_eq!(gui["parent"], "minecraft:item/golden_sword");
+            assert!(gui["textures"].get("layer0").is_none());
+            assert!(gui["textures"].get("layer1").is_some());
+            let inherited = crate::compat::custom_items::cit_model(
+                root,
+                15,
+                model["base"]["parent"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                inherited["display"]["firstperson_righthand"],
+                authored["display"]["firstperson_righthand"]
+            );
+            assert_eq!(
+                inherited["display"]["firstperson_lefthand"],
+                authored["display"]["firstperson_lefthand"]
+            );
+            assert_eq!(inherited["textures"]["layer0"], "author:item/golden_sword");
+        }
+        assert!(
+            count >= 32,
+            "all remaining durability counters need a live base"
+        );
+    }
+}

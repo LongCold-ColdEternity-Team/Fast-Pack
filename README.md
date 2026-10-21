@@ -142,6 +142,8 @@ Fast Pack 的兼容规则负责转换渲染资源。自定义天空的显示取�
 
 CLI 可重复使用 `--builtin`，例如：`--builtin sharpness --builtin golden-durability --builtin highlight-names`。其余取值见 `--help`。运行期间无需下载这些内置资源。
 
+在 1.20.1 等旧版 CIT 客户端中，内置数字覆盖沿用当前资源栈中的基础模型、贴图和左右手姿态，可与修改手持视角的模型覆盖一起使用。多个内置数字功能可以在同次制作中勾选。两个包若同时定义同一项 CIT 条件效果或同一着色器，仍由客户端按资源优先级选择；资源包堆叠本身不会合并这类冲突文件。
+
 CLI 使用 `--name-background-color "#3399CC"` 设置昵称背景色，使用 `--rainbow-name-background` 开启受支持版本的动态背景；这两个参数会自动启用昵称高亮。
 
 ### 转换结果命名

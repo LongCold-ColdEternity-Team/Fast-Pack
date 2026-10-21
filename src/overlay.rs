@@ -225,6 +225,16 @@ pub fn filename(name: &str, version: &str, as_zip: bool) -> String {
 pub fn build(
     destination: &Path,
     options: &Options,
+    progress: impl FnMut(&str, u8),
+) -> Result<Report> {
+    crate::tasks::run("制作覆盖包", || {
+        build_inner(destination, options, progress)
+    })
+}
+
+fn build_inner(
+    destination: &Path,
+    options: &Options,
     mut progress: impl FnMut(&str, u8),
 ) -> Result<Report> {
     let format = crate::pack_format_of(&options.version)?;

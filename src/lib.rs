@@ -7,6 +7,7 @@ pub mod converter;
 pub mod crosshair;
 pub mod overlay;
 pub mod tables;
+pub mod tasks;
 
 pub use converter::{
     ConversionOptions, ConversionReport, PackInfo, convert_pack, probe_pack, suggest_output,

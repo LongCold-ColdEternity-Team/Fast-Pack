@@ -437,17 +437,26 @@ impl App {
                 self.overlay.icon_pending = true;
                 let revision = self.overlay.icon_revision;
                 let sender = self.sender.clone();
-                std::thread::spawn(move || {
-                    let result = (|| -> anyhow::Result<_> {
-                        anyhow::ensure!(
-                            std::fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
-                            "图标文件不能超过 16 MB"
-                        );
-                        overlay::prepare_icon(&std::fs::read(path)?)
-                    })()
-                    .map_err(|error| format!("{error:#}"));
-                    let _ = sender.send(WorkEvent::OverlayIcon(revision, result));
-                });
+                let spawned = std::thread::Builder::new()
+                    .name("overlay-icon".into())
+                    .spawn(move || {
+                        let result = fast_pack::tasks::run(
+                            "处理覆盖包图标",
+                            || -> anyhow::Result<_> {
+                                anyhow::ensure!(
+                                    std::fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
+                                    "图标文件不能超过 16 MB"
+                                );
+                                overlay::prepare_icon(&std::fs::read(path)?)
+                            },
+                        )
+                        .map_err(|error| format!("{error:#}"));
+                        let _ = sender.send(WorkEvent::OverlayIcon(revision, result));
+                    });
+                if let Err(error) = spawned {
+                    self.overlay.icon_pending = false;
+                    self.overlay.error = Some(format!("无法启动图标处理：{error}"));
+                }
             }
             Event::ResetIcon => {
                 self.overlay.icon_revision += 1;
@@ -572,13 +581,19 @@ impl App {
         self.overlay.progress.set(0.0, self.now, true);
         self.overlay.step = "正在准备覆盖包".into();
         let sender = self.sender.clone();
-        std::thread::spawn(move || {
-            let result = overlay::build(&destination, &options, |step, value| {
-                let _ = sender.send(WorkEvent::OverlayProgress(step.into(), value));
-            })
-            .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(WorkEvent::OverlayDone(result));
-        });
+        let spawned = std::thread::Builder::new()
+            .name("overlay-build".into())
+            .spawn(move || {
+                let result = overlay::build(&destination, &options, |step, value| {
+                    let _ = sender.send(WorkEvent::OverlayProgress(step.into(), value));
+                })
+                .map_err(|error| format!("{error:#}"));
+                let _ = sender.send(WorkEvent::OverlayDone(result));
+            });
+        if let Err(error) = spawned {
+            self.overlay.running = false;
+            self.overlay.error = Some(format!("无法启动覆盖包制作：{error}"));
+        }
     }
 
     pub(super) fn overlay_body(&self) -> widget::Column<'_, Message> {

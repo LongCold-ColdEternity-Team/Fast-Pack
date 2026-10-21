@@ -12,14 +12,16 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, GetLastError, HANDLE, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CreateEventW, EVENT_MODIFY_STATE, OpenEventW, SetEvent,
-    WaitForMultipleObjects, WaitForSingleObject,
+    CREATE_NO_WINDOW, CreateEventW, EVENT_MODIFY_STATE, GetExitCodeProcess, GetProcessTimes,
+    OpenEventW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, SetEvent, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 
 const SESSION: &str = "FAST_PACK_RENDER_SESSION";
@@ -48,6 +50,108 @@ fn remember(path: &Path, software: bool) -> Result<()> {
     temporary.as_file().sync_all()?;
     temporary.persist(path).context("无法保存渲染兼容设置")?;
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct GpuLease {
+    pid: u32,
+    creation: u64,
+}
+
+/// A normal return clears the lease. Native crashes and process aborts leave it
+/// behind so the next launch can choose software without restarting lost work.
+pub struct RuntimeLease(std::path::PathBuf);
+
+impl RuntimeLease {
+    fn create(directory: &Path, pid: u32, creation: u64) -> Result<Self> {
+        let directory = directory.join("runtime");
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("gpu-{pid}-{creation}.json"));
+        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        file.write_all(&serde_json::to_vec(&GpuLease { pid, creation })?)?;
+        file.persist_noclobber(&path).map_err(|error| error.error)?;
+        Ok(Self(path))
+    }
+
+    pub fn finish(self) {
+        let _ = fs::remove_file(self.0);
+    }
+}
+
+// None means the process cannot be inspected; do not mistake that for a crash.
+fn process_creation(pid: u32) -> Option<Option<u64>> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return (GetLastError() == ERROR_INVALID_PARAMETER).then_some(None);
+        }
+        let mut code = 0;
+        if GetExitCodeProcess(handle, &mut code) == 0 {
+            CloseHandle(handle);
+            return None;
+        }
+        if code != 259 {
+            // STILL_ACTIVE
+            CloseHandle(handle);
+            return Some(None);
+        }
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        ok.then_some(Some(
+            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
+        ))
+    }
+}
+
+pub fn runtime_lease() -> Option<RuntimeLease> {
+    if std::env::var("ICED_BACKEND").as_deref() != Ok("wgpu") {
+        return None;
+    }
+    let directory = crate::preferences::state_directory().ok()?;
+    let pid = std::process::id();
+    let creation = process_creation(pid)??;
+    RuntimeLease::create(&directory, pid, creation).ok()
+}
+
+fn recover_unclean(directory: &Path, alive: impl Fn(u32, u64) -> bool) -> bool {
+    let Ok(entries) = fs::read_dir(directory.join("runtime")) else {
+        return false;
+    };
+    let mut unclean = false;
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("gpu-")
+            || !entry
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 4096)
+        {
+            continue;
+        }
+        let Some(lease) = fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<GpuLease>(&bytes).ok())
+        else {
+            continue;
+        };
+        if alive(lease.pid, lease.creation) {
+            continue;
+        }
+        unclean = true;
+        let logs = directory.join("logs");
+        if fs::create_dir_all(&logs).is_ok() {
+            let _ = fs::rename(
+                entry.path(),
+                logs.join(format!(
+                    "renderer-unclean-{}-{}.json",
+                    lease.pid, lease.creation
+                )),
+            );
+        }
+    }
+    unclean
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -296,6 +400,12 @@ pub fn launch_if_needed() -> Result<Option<i32>> {
                 return Ok(None);
             };
             let cache = directory.join("renderer.json");
+            if recover_unclean(&directory, |pid, creation| {
+                process_creation(pid).is_none_or(|actual| actual == Some(creation))
+            }) {
+                let _ = remember(&cache, true);
+                crate::startup::record("previous_gpu_session_unclean");
+            }
             if saved_software(&cache) && !retry {
                 use_software();
                 return Ok(None);

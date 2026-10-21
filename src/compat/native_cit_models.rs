@@ -126,6 +126,40 @@ pub(super) fn compose(
     Ok(json!({"parent":parent,"textures":textures,"display":display}))
 }
 
+/// Standalone HUD packs must resolve their base through the resource stack.
+/// Copying its display and layer0 here would freeze the vanilla hand pose and
+/// texture, hiding resource packs below the generated overlay.
+pub(super) fn compose_overlay(
+    root: &Path,
+    target: u32,
+    item: &str,
+    parts: &[Value],
+    outputs: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<Value> {
+    let Some(first) = parts.first() else {
+        return compose(root, target, item, parts, outputs);
+    };
+    let reference = first["model"].as_str().context("基础模型缺少 model")?;
+    resource(reference)?;
+    if parts.len() == 1 {
+        // Keep the original reference, including authored geometry and poses.
+        return Ok(json!({"parent":reference}));
+    }
+    let mut composed = compose(root, target, item, parts, outputs)?;
+    let original = model(root, target, reference)?;
+    let original_layers = (0..5)
+        .take_while(|index| original["textures"].get(format!("layer{index}")).is_some())
+        .count();
+    ensure!(original_layers > 0, "基础模型没有可叠加的平面贴图");
+    let textures = composed["textures"]
+        .as_object_mut()
+        .context("覆盖模型缺少贴图")?;
+    for index in 0..original_layers {
+        textures.remove(&format!("layer{index}"));
+    }
+    Ok(json!({"parent":reference,"textures":textures}))
+}
+
 fn texture(
     root: &Path,
     target: u32,
