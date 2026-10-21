@@ -36,6 +36,142 @@ pub struct Preview {
     pub image: RgbaImage,
 }
 
+#[derive(Debug)]
+enum SkippedSkySource {
+    Metadata,
+    MissingTexture(String),
+}
+
+impl std::fmt::Display for SkippedSkySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Metadata => f.write_str("macOS AppleDouble 元数据"),
+            Self::MissingTexture(path) => write!(f, "天空纹理不存在: {path}"),
+        }
+    }
+}
+
+impl std::error::Error for SkippedSkySource {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InactiveSky {
+    configuration: String,
+    texture: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SkyNotes {
+    warnings: Vec<String>,
+    metadata: Vec<String>,
+    inactive: Vec<InactiveSky>,
+}
+
+impl SkyNotes {
+    fn validate(&self, root: &Path) -> Result<()> {
+        for path in &self.metadata {
+            local(root, path)?;
+        }
+        for entry in &self.inactive {
+            local(root, &entry.configuration)?;
+            local(root, &entry.texture)?;
+            ensure!(
+                entry.configuration.starts_with("assets/")
+                    && entry.configuration.contains("/sky/")
+                    && matches!(
+                        Path::new(&entry.configuration)
+                            .extension()
+                            .and_then(|s| s.to_str()),
+                        Some("properties" | "json")
+                    ),
+                "无效天空配置缓存路径不合法"
+            );
+        }
+        Ok(())
+    }
+
+    fn save(&self, root: &Path) -> Result<()> {
+        self.validate(root)?;
+        let path = root.join("fastpack/canonical-sky/scan.json");
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        Ok(())
+    }
+
+    fn apply(&self, root: &Path, layers: usize, report: &mut CompatibilityReport) -> Result<()> {
+        self.validate(root)?;
+        report.warnings.extend(self.warnings.iter().cloned());
+        if !self.metadata.is_empty() {
+            report.sky_converted.push(format!(
+                "天空扫描：已忽略 {} 个 macOS AppleDouble 元数据副本，原文件保留",
+                self.metadata.len()
+            ));
+        }
+        if !self.inactive.is_empty() {
+            for entry in &self.inactive {
+                let source = local(root, &entry.configuration)?;
+                // A cached name may now belong to an authored replacement.
+                // Only retire a rule while its current texture is still missing.
+                if !source.pack_is_file() {
+                    continue;
+                }
+                let bytes = fs::read(&source)?;
+                let current = (|| -> Result<PathBuf> {
+                    if entry.configuration.ends_with(".properties") {
+                        let props = properties::parse(&bytes)?;
+                        resolve(
+                            root,
+                            &source,
+                            props.get("source").map(String::as_str),
+                            if entry.configuration.contains("/mcpatcher/") {
+                                "mcpatcher"
+                            } else {
+                                "optifine"
+                            },
+                            None,
+                        )
+                    } else {
+                        let value: Value = serde_json::from_slice(&bytes)?;
+                        resolve(root, &source, value["texture"].as_str(), "", None)
+                    }
+                })();
+                if current
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<SkippedSkySource>())
+                    .is_none_or(|issue| !matches!(issue, SkippedSkySource::MissingTexture(_)))
+                {
+                    continue;
+                }
+                let mut backup = root
+                    .join("fastpack/original-sky")
+                    .join(&entry.configuration);
+                if backup.pack_is_file() && fs::read(&backup)? != bytes {
+                    use sha2::{Digest, Sha256};
+                    backup = root
+                        .join("fastpack/original-sky/revisions")
+                        .join(format!("{:x}", Sha256::digest(&bytes)))
+                        .join(&entry.configuration);
+                }
+                fs::create_dir_all(backup.parent().unwrap())?;
+                if !backup.pack_is_file() {
+                    fs::write(&backup, bytes)?;
+                }
+                fs::remove_file(source)?;
+            }
+            let textures: BTreeSet<_> = self.inactive.iter().map(|entry| &entry.texture).collect();
+            report.sky_converted.push(format!(
+                "天空配置整理：保留 {layers} 层有效天空；{} 条引用无效贴图路径的旧配置（{} 个路径）已备份停用，不影响有效天空；详情见 fastpack/canonical-sky/scan.json",
+                self.inactive.len(), textures.len()
+            ));
+            if layers == 0 {
+                report.warnings.push("天空：原配置均未找到对应贴图，未生成有效天空层；旧配置已备份，详见 fastpack/canonical-sky/scan.json".into());
+            }
+        }
+        self.save(root)
+    }
+}
+
 fn layout(name: &str) -> AtlasLayout {
     match name {
         "fsb" => AtlasLayout::FabricSkyboxes,
@@ -126,11 +262,15 @@ fn resolve(
             }
         }
     };
-    ensure!(
-        exists(&candidate),
-        "天空纹理不存在: {}",
-        candidate.display()
-    );
+    if !exists(&candidate) {
+        return Err(SkippedSkySource::MissingTexture(
+            candidate
+                .strip_prefix(root)?
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )
+        .into());
+    }
     Ok(candidate)
 }
 
@@ -306,14 +446,14 @@ fn json_props(value: &Value, nuit: bool) -> Result<Properties> {
     Ok(props)
 }
 
-fn read_layers(root: &Path) -> Result<(Vec<Layer>, Vec<String>)> {
+fn read_layers(root: &Path) -> Result<(Vec<Layer>, SkyNotes)> {
     read_layers_known(root, None)
 }
 
 fn read_layers_known(
     root: &Path,
     available: Option<&BTreeSet<String>>,
-) -> Result<(Vec<Layer>, Vec<String>)> {
+) -> Result<(Vec<Layer>, SkyNotes)> {
     let cache = root.join("fastpack/canonical-sky/layers.json");
     if cache.pack_is_file() {
         let layers: Vec<Layer> = serde_json::from_slice(&fs::read(cache)?)?;
@@ -332,13 +472,30 @@ fn read_layers_known(
             local(root, &layer.texture)?;
             local(root, &layer.original)?;
         }
-        let notes = root.join("fastpack/canonical-sky/warnings.json");
-        let warnings = if notes.pack_exists() {
-            serde_json::from_slice(&fs::read(notes)?)?
+        let scan = root.join("fastpack/canonical-sky/scan.json");
+        let notes = if scan.pack_is_file() {
+            let notes: SkyNotes = serde_json::from_slice(&fs::read(scan)?)?;
+            notes.validate(root)?;
+            notes
         } else {
-            Vec::new()
+            // Earlier builds left inactive rules in assets and cached their
+            // absolute temporary paths. Re-scan those rules to upgrade the notes.
+            let (_, mut notes) = read_layer_configs(root, available)?;
+            let legacy = root.join("fastpack/canonical-sky/warnings.json");
+            if legacy.pack_is_file() {
+                let previous: Vec<String> = serde_json::from_slice(&fs::read(legacy)?)?;
+                for warning in previous {
+                    if !warning.contains("天空纹理不存在:")
+                        && !warning.contains("AppleDouble")
+                        && !notes.warnings.contains(&warning)
+                    {
+                        notes.warnings.push(warning);
+                    }
+                }
+            }
+            notes
         };
-        return Ok((layers, warnings));
+        return Ok((layers, notes));
     }
     read_layer_configs(root, available)
 }
@@ -346,7 +503,7 @@ fn read_layers_known(
 fn read_preview_layers(
     root: &Path,
     available: Option<&BTreeSet<String>>,
-) -> Result<(Vec<Layer>, Vec<String>)> {
+) -> Result<(Vec<Layer>, SkyNotes)> {
     let active = read_layer_configs(root, available)?;
     if !active.0.is_empty() {
         return Ok(active);
@@ -357,7 +514,7 @@ fn read_preview_layers(
 fn read_layer_configs(
     root: &Path,
     available: Option<&BTreeSet<String>>,
-) -> Result<(Vec<Layer>, Vec<String>)> {
+) -> Result<(Vec<Layer>, SkyNotes)> {
     let mut candidates = Vec::new();
     for entry in WalkDir::new(root).min_depth(1) {
         let entry = entry?;
@@ -392,7 +549,7 @@ fn read_layer_configs(
         )
     });
     let mut layers = Vec::new();
-    let mut warnings = Vec::new();
+    let mut notes = SkyNotes::default();
     let mut seen = BTreeSet::new();
     for path in candidates {
         let original = path
@@ -401,13 +558,13 @@ fn read_layer_configs(
             .replace('\\', "/");
         let result = (|| -> Result<Layer> {
             let bytes = fs::read(&path)?;
-            ensure!(
-                !(path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("._"))
-                    && bytes.starts_with(b"\0\x05\x16\x07")),
-                "macOS AppleDouble 元数据，已跳过天空配置并原样保留"
-            );
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("._"))
+                && bytes.starts_with(b"\0\x05\x16\x07")
+            {
+                return Err(SkippedSkySource::Metadata.into());
+            }
             let name = path
                 .file_stem()
                 .unwrap_or_default()
@@ -512,10 +669,19 @@ fn read_layer_configs(
                     layers.push(layer);
                 }
             }
-            Err(error) => warnings.push(format!("{original}: {error:#}")),
+            Err(error) => match error.downcast_ref::<SkippedSkySource>() {
+                Some(SkippedSkySource::Metadata) => notes.metadata.push(original),
+                Some(SkippedSkySource::MissingTexture(texture)) => {
+                    notes.inactive.push(InactiveSky {
+                        configuration: original,
+                        texture: texture.clone(),
+                    })
+                }
+                None => notes.warnings.push(format!("{original}: {error:#}")),
+            },
         }
     }
-    Ok((layers, warnings))
+    Ok((layers, notes))
 }
 
 pub fn prepare(root: &Path) -> Result<Vec<String>> {
@@ -525,9 +691,9 @@ pub fn prepare(root: &Path) -> Result<Vec<String>> {
     {
         return Ok(Vec::new());
     }
-    let (mut layers, warnings) = read_layers(root)?;
+    let (mut layers, notes) = read_layers(root)?;
     if layers.is_empty() {
-        return Ok(warnings);
+        return Ok(notes.warnings);
     }
     let directory = root.join("fastpack/canonical-sky");
     fs::create_dir_all(&directory)?;
@@ -546,13 +712,14 @@ pub fn prepare(root: &Path) -> Result<Vec<String>> {
         directory.join("layers.json"),
         serde_json::to_vec_pretty(&layers)?,
     )?;
-    if !warnings.is_empty() {
+    notes.save(root)?;
+    if !notes.warnings.is_empty() {
         fs::write(
             directory.join("warnings.json"),
-            serde_json::to_vec_pretty(&warnings)?,
+            serde_json::to_vec_pretty(&notes.warnings)?,
         )?;
     }
-    Ok(warnings)
+    Ok(notes.warnings)
 }
 
 fn ranges(value: &str) -> Result<Vec<Value>> {
@@ -763,9 +930,9 @@ pub fn migrate(
     runtime: SkyRuntime,
     report: &mut CompatibilityReport,
 ) -> Result<()> {
-    let (mut layers, warnings) = read_layers(root)?;
-    report.warnings.extend(warnings);
+    let (mut layers, notes) = read_layers(root)?;
     report.sky_layers = layers.len();
+    notes.apply(root, layers.len(), report)?;
     if layers.is_empty() {
         return Ok(());
     }
