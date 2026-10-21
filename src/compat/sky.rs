@@ -400,13 +400,21 @@ fn read_layer_configs(
             .to_string_lossy()
             .replace('\\', "/");
         let result = (|| -> Result<Layer> {
+            let bytes = fs::read(&path)?;
+            ensure!(
+                !(path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("._"))
+                    && bytes.starts_with(b"\0\x05\x16\x07")),
+                "macOS AppleDouble 元数据，已跳过天空配置并原样保留"
+            );
             let name = path
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
             if path.extension().is_some_and(|ext| ext == "properties") {
-                let properties = properties::parse(&fs::read(&path)?)?;
+                let properties = properties::parse(&bytes)?;
                 let base = if original.contains("/mcpatcher/") {
                     "mcpatcher"
                 } else {
@@ -438,7 +446,7 @@ fn read_layer_configs(
                     decoration: matches!(name.as_str(), "sun" | "moon_phases"),
                 })
             } else {
-                let value: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                let value: Value = serde_json::from_slice(&bytes)?;
                 let nuit = original.starts_with("assets/nuit/");
                 let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
                 ensure!(

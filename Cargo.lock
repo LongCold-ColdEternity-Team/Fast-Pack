@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "fast-pack"
-version = "1.3.22"
+version = "1.3.23"
 dependencies = [
  "anyhow",
  "chrono",
