@@ -214,7 +214,9 @@ static DISPLAYS: LazyLock<Value> =
 fn read_model(root: &Path, format: u32, reference: &str) -> Result<Value> {
     let path = model_path(root, reference)?;
     if path.pack_is_file() {
-        return Ok(serde_json::from_slice(&fs::read(path)?)?);
+        let model: Value = serde_json::from_slice(&fs::read(path)?)?;
+        ensure!(model.is_object(), "物品模型 {reference} 不是 JSON 对象");
+        return Ok(model);
     }
     reference_model(format, reference).with_context(|| format!("未找到物品模型参考 {reference}"))
 }
@@ -669,7 +671,9 @@ impl Editor<'_> {
                 }
             }
         }
-        model.as_object_mut().unwrap().remove("slots");
+        if let Some(object) = model.as_object_mut() {
+            object.remove("slots");
+        }
         write_json(self.root, &model_path(self.root, &private)?, &model)?;
         Ok(private)
     }

@@ -550,9 +550,25 @@ fn normalize_lowercase(root: &Path) -> Result<usize> {
     for path in entries {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let lower = name.to_lowercase();
+        if lower == name {
+            continue;
+        }
         let target = path.with_file_name(&lower);
-        if lower != name && !target.pack_exists() {
-            fs::rename(&path, target)?;
+        // A pure case change resolves to the same entry both in the
+        // in-memory store (lowercased keys) and on case-insensitive
+        // filesystems, so only skip when the target resolves to a
+        // genuinely different entry.
+        let conflict = match target.pack_canonicalize() {
+            Ok(resolved) => {
+                let self_resolved = path.pack_canonicalize().unwrap_or_else(|_| path.clone());
+                resolved != path && resolved != self_resolved
+            }
+            Err(_) => false,
+        };
+        if conflict {
+            continue;
+        }
+        if fs::rename(&path, &target).is_ok() {
             count += 1;
         }
     }
@@ -1583,6 +1599,72 @@ mod speed_tests {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
             assert_eq!(bytes, vec![index as u8; 2048 + index]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod lowercase_tests {
+    use super::*;
+    use image::ImageEncoder;
+
+    fn write_png(path: &Path) {
+        let image = image::RgbaImage::from_pixel(16, 16, image::Rgba([12, 34, 56, 255]));
+        image::codecs::png::PngEncoder::new(std::fs::File::create(path).unwrap())
+            .write_image(image.as_raw(), 16, 16, image::ExtendedColorType::Rgba8)
+            .unwrap();
+    }
+
+    #[test]
+    fn convert_pack_lowercases_mixed_case_names_in_store_mode() {
+        let work = tempdir().unwrap();
+        let source = work.path().join("source");
+        std::fs::create_dir_all(source.join("assets/minecraft/textures/blocks/CustomDir")).unwrap();
+        std::fs::write(
+            source.join("pack.mcmeta"),
+            br#"{"pack":{"pack_format":1,"description":"t"}}"#,
+        )
+        .unwrap();
+        write_png(&source.join("assets/minecraft/textures/blocks/MyCustom.PNG"));
+        write_png(&source.join("assets/minecraft/textures/blocks/CustomDir/Inner.PNG"));
+        let output = tempdir().unwrap();
+        let destination = output.path().join("out");
+        let options = ConversionOptions {
+            tgt_format: 88,
+            lowercase: true,
+            as_zip: false,
+            ..Default::default()
+        };
+        let report = convert_pack(&source, &destination, &options, |_, _| {}).unwrap();
+        let block = destination.join("assets/minecraft/textures/block");
+        assert!(block.join("mycustom.png").exists());
+        assert!(block.join("customdir/inner.png").exists());
+        assert!(report.lowercased >= 2);
+    }
+
+    #[test]
+    fn normalize_lowercase_renames_on_disk_and_skips_genuine_collisions() {
+        let work = tempdir().unwrap();
+        let root = work.path();
+        std::fs::write(root.join("stone.png"), b"A").unwrap();
+        std::fs::write(root.join("Stone.PNG"), b"B").unwrap();
+        std::fs::create_dir_all(root.join("customdir")).unwrap();
+        std::fs::write(root.join("customdir/Inner.PNG"), b"C").unwrap();
+        std::fs::write(root.join("Upper.PNG"), b"D").unwrap();
+        let count = normalize_lowercase(root).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(
+            std::fs::read(root.join("customdir/inner.png")).unwrap(),
+            b"C"
+        );
+        assert_eq!(std::fs::read(root.join("upper.png")).unwrap(), b"D");
+        if cfg!(windows) {
+            // NTFS merged the case-variant writes into one entry at creation
+            // time; normalize must leave that entry's content untouched.
+            assert_eq!(std::fs::read(root.join("stone.png")).unwrap(), b"B");
+        } else {
+            assert_eq!(std::fs::read(root.join("stone.png")).unwrap(), b"A");
+            assert_eq!(std::fs::read(root.join("Stone.PNG")).unwrap(), b"B");
         }
     }
 }

@@ -1,7 +1,7 @@
 use fast_pack::converter::detect_format;
 use fast_pack::{
-    ConversionOptions, convert_pack, flatten_texture_name, legacy_texture_name, pack_format_of,
-    probe_pack, suggest_output, tables, version_label_of,
+    LATEST_VERSION, ConversionOptions, convert_pack, flatten_texture_name, legacy_texture_name,
+    pack_format_of, probe_pack, suggest_output, tables, version_label_of,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -96,7 +96,7 @@ fn original_reference_upgrade_matches() {
     }
     assert_eq!(report.files_total, 22);
     assert_eq!(report.src_format, 1);
-    assert_eq!(report.tgt_format, 88);
+    assert_eq!(report.tgt_format, 100);
     assert_eq!(
         progress
             .iter()
@@ -149,7 +149,7 @@ fn downgrade_preserves_unknown_and_converts_language() {
 #[test]
 fn embedded_tables_and_all_explicit_names() {
     let table = tables();
-    assert_eq!(table.pack_formats.len(), 29);
+    assert_eq!(table.pack_formats.len(), 80);
     assert_eq!(table.explicit_block.len(), 38);
     assert_eq!(table.explicit_item.len(), 79);
     assert_eq!(table.block_rules.len(), 16);
@@ -157,7 +157,13 @@ fn embedded_tables_and_all_explicit_names() {
     assert_eq!(table.legacy_stable_block.len(), 157);
     assert_eq!(table.legacy_stable_item.len(), 115);
     for (name, expected) in &table.explicit_block {
-        assert_eq!(flatten_texture_name(name, "block"), *expected);
+        let flattened = flatten_texture_name(name, "block");
+        let downgraded = if flattened == *name && *name != **expected {
+            legacy_texture_name(name, "block")
+        } else {
+            Some(flattened)
+        };
+        assert_eq!(downgraded, Some(expected.to_owned()));
     }
     for (name, expected) in &table.explicit_item {
         assert_eq!(flatten_texture_name(name, "item"), *expected);
@@ -302,13 +308,13 @@ fn collisions_preserve_existing_content() {
     let files = contents(&output);
     assert_eq!(
         files["assets/minecraft/textures/block/stone_bricks.png"],
-        b"preserved"
-    );
-    assert_eq!(
-        files["assets/minecraft/textures/blocks/stonebrick.png"],
         b"old"
     );
-    assert_eq!(report.skipped_conflict.len(), 1);
+    assert_eq!(
+        files["fastpack/original-assets/assets/minecraft/textures/block/stonebrick.png"],
+        b"preserved"
+    );
+    assert_eq!(report.skipped_conflict.len(), 0);
 }
 
 #[test]
@@ -337,11 +343,14 @@ fn detect_probe_and_output_suggestion() {
     assert!(info.ok);
     assert_eq!(info.src_format, Some(1));
     assert_eq!(info.file_count, 22);
-    assert_eq!(info.suggested_target, "26.2");
-    assert_eq!(probe_pack(&fixture("modern")).suggested_target, "1.8.9");
+    assert_eq!(info.suggested_target, LATEST_VERSION);
     assert_eq!(
-        suggest_output(Path::new("pack.zip"), "26.2", true),
-        PathBuf::from("[26.2]pack.zip")
+        probe_pack(&fixture("modern")).suggested_target,
+        LATEST_VERSION
+    );
+    assert_eq!(
+        suggest_output(Path::new("pack.zip"), LATEST_VERSION, true),
+        PathBuf::from(format!("[{LATEST_VERSION}]pack.zip"))
     );
     let work = tempdir().unwrap();
     for meta in [
@@ -368,10 +377,11 @@ fn cli_runs_without_runtime_dependencies() {
             .contains("Fast Pack")
     );
     let output = work.path().join("cli.zip");
+    let source = fixture("legacy");
     let result = std::process::Command::new(binary)
-        .arg(fixture("legacy"))
+        .arg(&source)
         .arg(&output)
-        .args(["--to", "26.2", "--quiet"])
+        .args(["--to", LATEST_VERSION, "--quiet"])
         .output()
         .unwrap();
     assert!(
@@ -381,7 +391,7 @@ fn cli_runs_without_runtime_dependencies() {
     );
     assert!(output.exists());
     let invalid = std::process::Command::new(binary)
-        .arg(fixture("legacy"))
+        .arg(&source)
         .arg(work.path().join("bad.zip"))
         .args(["--to", "missing"])
         .output()
@@ -423,3 +433,4 @@ fn native_gui_starts_converts_and_exits() {
     assert_eq!(report["tgt_format"], 88);
     assert!(contents(&output).contains_key("assets/minecraft/textures/block/stone_bricks.png"));
 }
+

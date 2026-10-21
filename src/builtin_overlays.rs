@@ -246,7 +246,10 @@ fn markers(node: &Value) -> Value {
     }
     // Every original composite has the ordinary item as its first child.
     if node["type"] == "minecraft:composite" {
-        let layers = node["models"].as_array().unwrap();
+        let layers = match node["models"].as_array() {
+            Some(layers) if !layers.is_empty() => layers,
+            _ => return node.clone(),
+        };
         return if layers.len() == 2 {
             layers[1].clone()
         } else {
@@ -264,18 +267,23 @@ fn markers(node: &Value) -> Value {
                         {
                             markers(value)
                         } else if key == "entries" {
-                            Value::Array(
-                                value
-                                    .as_array()
-                                    .unwrap()
-                                    .iter()
-                                    .map(|entry| {
-                                        let mut entry = entry.clone();
-                                        entry["model"] = markers(&entry["model"]);
-                                        entry
-                                    })
-                                    .collect(),
-                            )
+                            value
+                                .as_array()
+                                .map(|entries| {
+                                    Value::Array(
+                                        entries
+                                            .iter()
+                                            .map(|entry| {
+                                                let mut entry = entry.clone();
+                                                if entry.is_object() {
+                                                    entry["model"] = markers(&entry["model"]);
+                                                }
+                                                entry
+                                            })
+                                            .collect(),
+                                    )
+                                })
+                                .unwrap_or_else(|| value.clone())
                         } else {
                             value.clone()
                         },

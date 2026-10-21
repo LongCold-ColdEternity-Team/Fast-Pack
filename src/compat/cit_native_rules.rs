@@ -177,6 +177,7 @@ pub(super) fn migrate(
         } else {
             super::super::modern_items::definition_reference(target,&name).unwrap_or_else(||json!({"model":{"type":"minecraft:model","model":format!("{namespace}:item/{name}")}}))
         };
+        ensure!(definition.is_object(), "CIT：物品定义 {item} 不是 JSON 对象");
         if let Some(saved) = previous.items.get(&item) {
             if definition["model"] != saved.output {
                 report

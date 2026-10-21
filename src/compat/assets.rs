@@ -373,23 +373,26 @@ fn entities(root: &Path, source: u32, target: u32, report: &mut AssetReport) -> 
             {
                 let image = open(&path)?;
                 let scale = image.width() / 128;
-                ensure!(
-                    scale > 0 && image.height() == 64 * scale,
-                    "现代船 UV 比例无效"
-                );
-                let mut out = RgbaImage::new(64 * scale, 32 * scale);
-                reproject_box(
-                    &image,
-                    &mut out,
-                    (0, 0, 28, 16, 3),
-                    (0, 8, 24, 16, 4),
-                    scale,
-                );
-                reproject_box(&image, &mut out, (0, 35, 28, 6, 2), (0, 0, 20, 6, 2), scale);
-                save(root, &old, &out)?;
-                report
-                    .converted
-                    .push("船：自动反向重建旧船 UV，使用橡木船作为旧版统一材质".into());
+                if scale == 0 || image.height() != 64 * scale {
+                    report.warnings.push(format!(
+                        "{}：现代船 UV 比例无效，保留原纹理",
+                        path.strip_prefix(root).unwrap_or(&path).display()
+                    ));
+                } else {
+                    let mut out = RgbaImage::new(64 * scale, 32 * scale);
+                    reproject_box(
+                        &image,
+                        &mut out,
+                        (0, 0, 28, 16, 3),
+                        (0, 8, 24, 16, 4),
+                        scale,
+                    );
+                    reproject_box(&image, &mut out, (0, 35, 28, 6, 2), (0, 0, 20, 6, 2), scale);
+                    save(root, &old, &out)?;
+                    report
+                        .converted
+                        .push("船：自动反向重建旧船 UV，使用橡木船作为旧版统一材质".into());
+                }
             }
         }
     }
@@ -1229,6 +1232,9 @@ fn models(root: &Path, source: u32, target: u32, report: &mut AssetReport) -> Re
         let Ok(mut value) = serde_json::from_slice::<Value>(&fs::read(&path)?) else {
             continue;
         };
+        if !value.is_object() {
+            continue;
+        }
         let recovered = if source >= 2 {
             super::item_display::recover(root, &relative, &mut value, target)?
         } else {

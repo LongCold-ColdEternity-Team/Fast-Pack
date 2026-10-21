@@ -284,24 +284,28 @@ fn uploaded_pack_runs_all_asset_steps_without_manual_todos() {
             .exists()
     );
     let model = json_file(&output, "assets/minecraft/models/item/diamond_sword.json");
-    assert_eq!(model["parent"], "minecraft:item/generated");
+    assert_eq!(model["parent"], "minecraft:item/handheld");
     assert_eq!(
         model["display"]["firstperson_righthand"]["rotation"],
-        json!([0, 30, 0])
-    );
-    assert!(
-        output
-            .join("assets/minecraft/models/block/red_wool.json")
-            .exists()
-    );
-    assert_eq!(
-        json_file(&output, "assets/minecraft/blockstates/red_wool.json")["variants"][""]["model"],
-        "minecraft:block/red_wool"
+        json!([0.0, 75.0, 0.0])
     );
     assert_eq!(
         json_file(&output, "assets/minecraft/items/diamond_sword.json")["model"]["type"],
         "minecraft:model"
     );
+    assert_eq!(
+        json_file(&output, "assets/minecraft/blockstates/red_wool.json")["variants"][""]["model"],
+        "minecraft:block/red_wool"
+    );
+    let model = json_file(&output, "assets/minecraft/models/block/red_wool.json");
+    assert_eq!(model["parent"], "block/cube_all");
+    assert_eq!(model["textures"]["all"], "block/red_wool");
+    let state = json_file(&output, "assets/minecraft/blockstates/wool.json");
+    assert_eq!(
+        state["variants"]["color=silver"]["model"],
+        "minecraft:block/light_gray_wool"
+    );
+    assert_eq!(state["variants"]["color=silver"]["x"], 90);
     let font = json_file(&output, "assets/minecraft/font/uniform.json");
     assert_eq!(font["providers"][0]["type"], "bitmap");
     assert_eq!(
@@ -413,26 +417,25 @@ fn legacy_sky_to_1201_rewrites_paths_automatically() {
     )
     .unwrap();
     assert_eq!(report.compatibility.sky_layers, 1);
+    let properties = compat::properties::parse(&fs::read(
+        output
+            .join("assets/minecraft/optifine/sky/world0/sky1.properties"),
+    )
+    .unwrap())
+    .unwrap();
+    assert_eq!(properties["rotate"], "true");
+    let (namespace, name) = properties["source"].split_once(':').unwrap();
+    assert_eq!(namespace, "minecraft");
     assert_eq!(
-        read(&output, "assets/minecraft/optifine/sky/world0/sky1.png"),
+        read(&output, &format!("assets/{namespace}/{name}")),
         image
     );
-    let props = compat::properties::parse(
-        &fs::read(output.join("assets/minecraft/optifine/sky/world0/sky1.properties")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(props["source"], "./sky1.png");
-    assert_eq!(props["rotate"], "true");
-    assert!(
-        !output
-            .join("assets/minecraft/mcpatcher/sky/world0/sky1.properties")
-            .exists()
-    );
-    assert!(
-        output
-            .join("fastpack/original-sky/assets/minecraft/mcpatcher/sky/world0/sky1.properties")
-            .exists()
-    );
+    assert!(!output
+        .join("assets/minecraft/mcpatcher/sky/world0/sky1.properties")
+        .exists());
+    assert!(output
+        .join("fastpack/original-sky/assets/minecraft/mcpatcher/sky/world0/sky1.properties")
+        .exists());
 }
 
 #[test]
@@ -461,7 +464,10 @@ fn static_sky_uses_nuit_schema_and_can_return_to_legacy() {
         definition["conditions"]["dimensions"]["entries"],
         json!(["minecraft:overworld"])
     );
-    let converted = read(&modern, "assets/fastpack/textures/sky/layer_0.png");
+    let texture = definition["texture"].as_str().unwrap();
+    assert!(texture.starts_with("fastpack:textures/sky/converted_"));
+    let (namespace, name) = texture.split_once(':').unwrap();
+    let converted = read(&modern, &format!("assets/{namespace}/{name}"));
     assert_eq!(
         atlas::remap(&converted, AtlasLayout::Nuit, AtlasLayout::Optifine, true).unwrap(),
         image
@@ -477,15 +483,15 @@ fn static_sky_uses_nuit_schema_and_can_return_to_legacy() {
         |_, _| {},
     )
     .unwrap();
-    assert_eq!(
-        read(&legacy, "assets/minecraft/mcpatcher/sky/world0/sky1.png"),
-        image
-    );
-    assert!(
-        !legacy
-            .join("assets/nuit/sky/fastpack_layer_0.json")
-            .exists()
-    );
+    let returned = compat::properties::parse(&fs::read(
+        legacy
+            .join("assets/minecraft/mcpatcher/sky/world0/sky1.properties"),
+    )
+    .unwrap())
+    .unwrap();
+    let (namespace, name) = returned["source"].split_once(':').unwrap();
+    assert_eq!(read(&legacy, &format!("assets/{namespace}/{name}")), image);
+    assert!(!legacy.join("assets/nuit/sky/fastpack_layer_0.json").exists());
 }
 
 #[test]
@@ -642,7 +648,7 @@ fn model_only_packs_migrate_default_texture_refs_and_downgrade_color_states() {
         "assets/minecraft/blockstates/red_wool.json",
         br#"{"variants":{"":{"model":"minecraft:block/red_wool"}}}"#,
     );
-    convert_pack(
+    let report = convert_pack(
         &source,
         &output,
         &ConversionOptions {
@@ -653,13 +659,31 @@ fn model_only_packs_migrate_default_texture_refs_and_downgrade_color_states() {
         |_, _| {},
     )
     .unwrap();
-    assert_eq!(
-        json_file(&output, "assets/minecraft/models/block/wool_red.json")["textures"]["all"],
-        "minecraft:blocks/wool_colored_red"
+    assert!(!output
+        .join("assets/minecraft/models/block/red_wool.json")
+        .exists());
+    assert!(!output
+        .join("assets/minecraft/blockstates/red_wool.json")
+        .exists());
+    let model = json_file(
+        &output,
+        "fastpack/modern-defaults/assets/minecraft/models/block/red_wool.json",
     );
+    assert_eq!(model["parent"], "minecraft:block/cube_all");
+    assert_eq!(model["textures"]["all"], "minecraft:block/red_wool");
     assert_eq!(
-        json_file(&output, "assets/minecraft/blockstates/wool.json")["variants"]["color=red"]["model"],
-        "wool_red"
+        json_file(
+            &output,
+            "fastpack/modern-defaults/assets/minecraft/blockstates/red_wool.json"
+        )["variants"][""]["model"],
+        "minecraft:block/red_wool"
+    );
+    assert!(
+        report
+            .assets
+            .converted
+            .iter()
+            .any(|value| value.contains("原版资源"))
     );
 }
 

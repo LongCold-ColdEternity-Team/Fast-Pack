@@ -1,7 +1,7 @@
 use super::assets::{AssetReport, backup};
 use crate::packfs as fs;
 use crate::packfs::PathExt;
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -409,6 +409,7 @@ fn numeric_model(
         return Ok(());
     }
     let base_reference = format!("fastpack:via/base/{carrier}");
+    ensure!(original.is_object(), "CIT 载体模型 {carrier} 不是 JSON 对象");
     let mut base = original.clone();
     base.as_object_mut().unwrap().remove("overrides");
     write(root, &model_path(root, &base_reference).unwrap(), &base)?;
@@ -535,6 +536,7 @@ fn modern(root: &Path, target: u32, carrier: &str, rules: &[(Rule, String)]) -> 
     } else {
         default
     };
+    ensure!(value.is_object(), "CIT 物品定义 {carrier} 不是 JSON 对象");
     fn repair_default(value: &mut Value, entry: &str, native: &Value) {
         if value["type"]
             .as_str()
@@ -763,6 +765,12 @@ pub(super) fn migrate(
                 ));
                 continue;
             };
+            if !value.is_object() {
+                report.warnings.push(format!(
+                    "协议物品 {carrier}：原包物品模型不是 JSON 对象，已保留原文件，跳过该载体"
+                ));
+                continue;
+            }
             value
         } else {
             super::item_transitions::model_reference(target, carrier)
