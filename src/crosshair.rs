@@ -361,6 +361,14 @@ pub fn import(source: &Path) -> Result<Vec<Crosshair>> {
             image: normalized(decode(&fs::read(source)?)?, atlas, true)?,
         }]);
     }
+    let unpacked = if !source.pack_is_dir() && crate::archive::is_rar(source)? {
+        Some(crate::converter::load_pack(source)?)
+    } else {
+        None
+    };
+    let source = unpacked
+        .as_ref()
+        .map_or(source, |(_, root)| root.as_path());
     let mut entries: Vec<(String, String, u8, bool, Vec<u8>)> = Vec::new();
     let mut total_bytes = 0u64;
     if source.pack_is_dir() {

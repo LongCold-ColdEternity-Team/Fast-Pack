@@ -1,6 +1,6 @@
 [package]
 name = "fast-pack"
-version = "1.3.25"
+version = "1.3.26"
 authors = ["ColdEternity Team", "Long_Cold", "Wind_"]
 description = "Fast Pack: automatic Minecraft Java resource pack version conversion"
 license = "GPL-3.0-only"
@@ -39,6 +39,7 @@ flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs"]
 zip = { version = "6.0", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 png = "0.18"
+rars = { version = "=0.12.3", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.16", default-features = false }

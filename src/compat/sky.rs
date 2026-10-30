@@ -1146,6 +1146,10 @@ fn preview_entry(
 }
 
 pub fn preview(source: &Path) -> Result<Option<Preview>> {
+    if !source.pack_is_dir() && crate::archive::is_rar(source)? {
+        let (_work, root) = crate::converter::load_pack(source)?;
+        return preview(&root);
+    }
     if source.pack_is_dir() {
         let root = crate::converter::find_pack_root(source)?;
         let canonical = root.pack_canonicalize()?;

@@ -40,7 +40,7 @@ struct Arguments {
     crosshair: Option<PathBuf>,
     #[arg(long, help = "隐藏 1.9+ 的准星与快捷栏攻击冷却指示")]
     hide_attack_indicator: bool,
-    #[arg(value_name = "SRC", help = "源 ZIP 或材质包文件夹")]
+    #[arg(value_name = "SRC", help = "源 ZIP、RAR 或材质包文件夹")]
     source: Option<PathBuf>,
     #[arg(
         value_name = "OUT",

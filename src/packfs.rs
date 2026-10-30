@@ -48,6 +48,11 @@ impl Mount {
                 }
             }
         } else {
+            // RAR is decoded sequentially to the temporary directory, including
+            // solid archives, without buffering every unpacked file in RAM.
+            if crate::archive::is_rar(source)? {
+                return Ok(None);
+            }
             if disk::metadata(source)?.len() > BUDGET {
                 return Ok(None);
             }

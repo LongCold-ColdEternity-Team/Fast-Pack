@@ -97,6 +97,70 @@ fn pattern_mask_becomes_alpha_and_preserves_base_rgb() {
 }
 
 #[test]
+fn pattern_masks_support_different_base_and_pattern_resolutions() {
+    let base = RgbaImage::from_fn(128, 128, |x, y| Rgba([x as u8, y as u8, 113, 255]));
+    let pattern = RgbaImage::from_pixel(64, 64, Rgba([128, 0, 0, 200]));
+    let banner = assets::alpha_pattern(&pattern, Some(&base), false, false).unwrap();
+    assert_eq!(banner.dimensions(), (64, 64));
+    assert_eq!(*banner.get_pixel(10, 20), Rgba([20, 40, 113, 100]));
+    assert_eq!(banner.get_pixel(42, 0)[3], 0);
+    let shield = assets::alpha_pattern(&pattern, Some(&base), true, false).unwrap();
+    assert_eq!(*shield.get_pixel(3, 4), Rgba([6, 8, 113, 100]));
+    assert_eq!(shield.get_pixel(0, 0)[3], 0);
+    for shield in [false, true] {
+        assert_eq!(
+            assets::alpha_pattern(&pattern, Some(&base), shield, true).unwrap(),
+            assets::alpha_pattern(&pattern, None, shield, true).unwrap()
+        );
+    }
+    let large = RgbaImage::from_pixel(128, 128, Rgba([255, 0, 0, 255]));
+    let small = RgbaImage::from_fn(64, 64, |x, y| Rgba([x as u8, y as u8, 77, 255]));
+    let result = assets::alpha_pattern(&large, Some(&small), false, false).unwrap();
+    assert_eq!(*result.get_pixel(20, 40), Rgba([10, 20, 77, 255]));
+}
+
+#[test]
+fn nested_item_model_paths_do_not_become_native_item_definitions() {
+    let work = tempdir().unwrap();
+    let source = work.path().join("source");
+    let output = work.path().join("output");
+    write(&source, "pack.mcmeta", br#"{"pack":{"pack_format":6}}"#);
+    let model = br#"{"parent":"minecraft:item/generated","textures":{"layer0":"demo:item/stick"}}"#;
+    let paths = [
+        "assets/demo/models/item/stick.json",
+        "assets/demo/optifine/cit/models/item/stick.json",
+        "extra/models/item/readme.json",
+    ];
+    for path in paths {
+        write(&source, path, model);
+    }
+    convert_pack(
+        &source,
+        &output,
+        &ConversionOptions {
+            tgt_format: 46,
+            target_version: Some("1.21.4".into()),
+            as_zip: false,
+            auto_client_setup: false,
+            heypixel_compat: false,
+            ..Default::default()
+        },
+        |_, _| {},
+    )
+    .unwrap();
+    assert!(output.join("assets/demo/items/stick.json").is_file());
+    assert!(!output.join("assets/demo/items/optifine").exists());
+    assert!(!output.join("items/readme.json").exists());
+    for path in paths {
+        assert_eq!(
+            json_file(&output, path),
+            serde_json::from_slice::<Value>(model).unwrap()
+        );
+        assert_eq!(fs::read(source.join(path)).unwrap(), model);
+    }
+}
+
+#[test]
 fn uploaded_pack_runs_all_asset_steps_without_manual_todos() {
     let work = tempdir().unwrap();
     let source = work.path().join("source");

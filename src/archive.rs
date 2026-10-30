@@ -1,5 +1,8 @@
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 
+mod rar;
+pub(crate) use rar::{extract_rar, is_rar, open_rar, rar_link, rar_name, rar_options};
+
 const CAPACITY: usize = 256 * 1024;
 
 pub(crate) struct ArchiveReader<R> {

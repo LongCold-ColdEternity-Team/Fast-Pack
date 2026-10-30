@@ -125,7 +125,7 @@ fn directory(source: &Path, info: &mut PackInfo) -> Result<()> {
     Ok(())
 }
 
-fn normalized(name: &str) -> Option<String> {
+pub(crate) fn normalized(name: &str) -> Option<String> {
     let name = name.replace('\\', "/");
     if name.starts_with('/') || name.contains(':') || name.split('/').any(|part| part == "..") {
         return None;
@@ -138,20 +138,10 @@ fn normalized(name: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn archive(source: &Path, info: &mut PackInfo) -> Result<()> {
-    let reader = crate::archive::ArchiveReader::new(
-        File::open(source).with_context(|| format!("无法读取 {}", source.display()))?,
-    )?;
-    let mut archive = ZipArchive::new(reader).context("不是有效的 ZIP 材质包")?;
-    let mut entries = HashMap::with_capacity(archive.len());
-    for index in 0..archive.len() {
-        let Some(raw) = archive.name_for_index(index) else {
-            continue;
-        };
-        if let Some(name) = normalized(raw) {
-            entries.insert(name, (index, raw.ends_with('/') || raw.ends_with('\\')));
-        }
-    }
+fn scan_entries(
+    entries: HashMap<String, (usize, bool)>,
+    info: &mut PackInfo,
+) -> (Scan, Option<usize>) {
     let root_metadata = entries
         .iter()
         .any(|(name, (_, directory))| !directory && name.eq_ignore_ascii_case("pack.mcmeta"));
@@ -191,6 +181,53 @@ fn archive(source: &Path, info: &mut PackInfo) -> Result<()> {
             metadata_index = Some(index);
         }
     }
+    (scan, metadata_index)
+}
+
+fn archive(source: &Path, info: &mut PackInfo) -> Result<()> {
+    if crate::archive::is_rar(source)? {
+        let archive = crate::archive::open_rar(source)?;
+        let entries = archive
+            .members()
+            .enumerate()
+            .filter(|(_, member)| !crate::archive::rar_link(&member.meta))
+            .filter_map(|(index, member)| {
+                crate::archive::rar_name(&member.meta)
+                    .map(|name| (name, (index, member.meta.is_directory)))
+            })
+            .collect();
+        let (scan, metadata_index) = scan_entries(entries, info);
+        let value = if let Some(index) = metadata_index {
+            let member = archive.members().nth(index).unwrap();
+            ensure!(
+                member.meta.unpacked_size <= METADATA_LIMIT,
+                "pack.mcmeta 超过 1 MiB，无法快速识别"
+            );
+            archive
+                .read_member_at_with_options(index, crate::archive::rar_options())?
+                .map(|bytes| metadata(bytes.as_slice()))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        scan.finish(info, value);
+        return Ok(());
+    }
+    let reader = crate::archive::ArchiveReader::new(
+        File::open(source).with_context(|| format!("无法读取 {}", source.display()))?,
+    )?;
+    let mut archive = ZipArchive::new(reader).context("不是有效的 ZIP 或 RAR 材质包")?;
+    let mut entries = HashMap::with_capacity(archive.len());
+    for index in 0..archive.len() {
+        let Some(raw) = archive.name_for_index(index) else {
+            continue;
+        };
+        if let Some(name) = normalized(raw) {
+            entries.insert(name, (index, raw.ends_with('/') || raw.ends_with('\\')));
+        }
+    }
+    let (scan, metadata_index) = scan_entries(entries, info);
     let value = if let Some(index) = metadata_index {
         let entry = archive.by_index(index)?;
         ensure!(

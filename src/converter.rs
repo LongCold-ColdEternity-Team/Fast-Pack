@@ -324,6 +324,9 @@ fn load_pack_into(source: &Path, base: &Path) -> Result<PathBuf> {
         }
     } else if source.pack_is_dir() {
         copy_tree(source, &base)?;
+    } else if crate::archive::is_rar(source)? {
+        fs::create_dir_all(base)?;
+        crate::archive::extract_rar(source, base)?;
     } else if !fs::mounted(base) {
         fs::create_dir_all(base)?;
         let mut archive = ZipArchive::new(crate::archive::ArchiveReader::new(

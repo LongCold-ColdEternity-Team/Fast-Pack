@@ -173,10 +173,10 @@ pub fn alpha_pattern(
         scale > 0 && pattern.width().is_multiple_of(64),
         "旗帜/盾牌纹理宽度必须是 64 的倍数"
     );
-    if let Some(base) = base {
+    if let Some(base) = base.filter(|_| !reverse) {
         ensure!(
-            base.dimensions() == pattern.dimensions(),
-            "底图与图案分辨率不同"
+            base.width() > 0 && base.height() > 0,
+            "旗帜/盾牌底图不能为空"
         );
     }
     let mut out = RgbaImage::new(pattern.width(), pattern.height());
@@ -192,7 +192,13 @@ pub fn alpha_pattern(
                 out.put_pixel(x, y, Rgba([pixel[3], pixel[3], pixel[3], 255]));
             } else {
                 let rgb = base
-                    .map(|base| base.get_pixel(x, y).0)
+                    .map(|base| {
+                        let bx = u64::from(x) * u64::from(base.width())
+                            / u64::from(pattern.width());
+                        let by = u64::from(y) * u64::from(base.height())
+                            / u64::from(pattern.height());
+                        base.get_pixel(bx as u32, by as u32).0
+                    })
                     .unwrap_or([255, 255, 255, 255]);
                 out.put_pixel(
                     x,
@@ -1426,16 +1432,15 @@ fn models(root: &Path, source: u32, target: u32, report: &mut AssetReport) -> Re
                 }
             }
         }
-        if source < 46 && target >= 46 && relative.contains("/models/item/") {
-            let (namespace, path_suffix) = relative
+        if source < 46
+            && target >= 46
+            && let Some((namespace, path_suffix)) = relative
                 .strip_prefix("assets/")
-                .unwrap()
-                .split_once('/')
-                .unwrap();
-            let name = path_suffix
+                .and_then(|path| path.split_once('/'))
+            && let Some(name) = path_suffix
                 .strip_prefix("models/item/")
-                .unwrap()
-                .trim_end_matches(".json");
+                .and_then(|path| path.strip_suffix(".json"))
+        {
             let name = if namespace == "minecraft" && source < 4 {
                 item_model_name(name)
             } else {

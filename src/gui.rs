@@ -2108,7 +2108,7 @@ impl App {
                     async {
                         rfd::AsyncFileDialog::new()
                             .set_title("Fast Pack · 导入材质包")
-                            .add_filter("ZIP", &["zip"])
+                            .add_filter("材质包", &["zip", "rar"])
                             .pick_files()
                             .await
                             .unwrap_or_default()
@@ -2224,7 +2224,7 @@ impl App {
                     async {
                         rfd::AsyncFileDialog::new()
                             .set_title("Fast Pack · 导入准星预设")
-                            .add_filter("准星包 / 图片", &["zip", "png"])
+                            .add_filter("准星包 / 图片", &["zip", "rar", "png"])
                             .pick_files()
                             .await
                             .map(|files| {
@@ -2890,7 +2890,7 @@ impl App {
             .map(|value| value.to_string_lossy().into_owned());
         let caption = match self.phase {
             Phase::Identifying => "正在后台识别…",
-            Phase::Empty => "支持 ZIP 或已解压文件夹",
+            Phase::Empty => "支持 ZIP、RAR 或已解压文件夹",
             Phase::Failed if !self.info.as_ref().is_some_and(|info| info.ok) => {
                 "未识别为有效的材质包"
             }
@@ -2915,9 +2915,9 @@ impl App {
                 self.action(
                     2,
                     if self.source.is_some() {
-                        "添加 ZIP"
+                        "添加压缩包"
                     } else {
-                        "选择 ZIP"
+                        "选择压缩包"
                     },
                     Some(Message::OpenFile),
                     false
@@ -3116,7 +3116,7 @@ impl App {
             ]
             .align_y(Alignment::Center),
             row![
-                self.action(44, "添加 ZIP", Some(Message::OpenFile), false),
+                self.action(44, "添加压缩包", Some(Message::OpenFile), false),
                 self.action(46, "添加文件夹", Some(Message::OpenFolder), false),
                 self.action(
                     45,
